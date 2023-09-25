@@ -37,7 +37,7 @@ async def publish_message(w, client, app, action, name, value):
                 "name"      : name,
                 "value"     : value
             }
-    print(f"{time.ctime()} - PUBLISH - [{w.SERIAL}] - {payload['name']} > {payload['value']}")
+    print(f"{time.ctime()} - PUB topic: v1cdti/{app}/{action}/{student_id}/model-01/{w.SERIAL} payload: {name}:{value}")
     await client.publish(f"v1cdti/{app}/{action}/{student_id}/model-01/{w.SERIAL}"
                         , payload=json.dumps(payload))
     
@@ -68,7 +68,10 @@ async def SPINING(self, filltime=100):
 
 async def CoroWashingMachine(w:WashingMachine , client):
 
+    await publish_message(w, client, "app", "get", "STATUS", "OFF")
+
     while True:
+
         if w.MACHINE_STATUS == 'OFF':
             print(f"{time.ctime()} - [{w.SERIAL}-{w.MACHINE_STATUS}] Be Waiting...")
             await w.event.wait()
@@ -87,8 +90,6 @@ async def CoroWashingMachine(w:WashingMachine , client):
         if w.MACHINE_STATUS == 'READY':
             print(f"{time.ctime()} - [{w.SERIAL}-{w.MACHINE_STATUS}] IN NOW READY!")
 
-            await publish_message(w, client, "app", "get", "STATUS", "READY")
-
             w.OP_STATUS = 'DOORCLOSE'
             if w.OP_STATUS == 'DOORCLOSE':
                 # door close
@@ -106,7 +107,7 @@ async def CoroWashingMachine(w:WashingMachine , client):
                     await w.Task
 
             except TimeoutError:
-                await publish_message(w, client, "app", "get", "FAULT_STATUS", "TIMEOUT")
+                await publish_message(w, client, "app", "set", "FAULT_STATUS", "TIMEOUT")
                 w.FAULT_STATUS = 'TIMEOUT'
                 w.MACHINE_STATUS = 'FAULT'
                 continue
@@ -118,7 +119,7 @@ async def CoroWashingMachine(w:WashingMachine , client):
 
         #Heat Step
         if w.OP_STATUS == 'WATERFULLLEVEL':
-            await publish_message(w, client, "app", "get", "STATUS", "HEATWATER")
+            await publish_message(w, client, "app", "set", "STATUS", "HEATWATER")
             w.MACHINE_STATUS = 'HEATWATER'
 
 
@@ -139,12 +140,12 @@ async def CoroWashingMachine(w:WashingMachine , client):
             except asyncio.CancelledError:
                 await publish_message(w, client, "app", "get", "OP_STATUS", "RequiredTemperatureReached")
                 w.OP_STATUS = 'RequiredTemperatureReached'
+                w.MACHINE_STATUS = 'WASH'
 
 
         #WASH Step
-        if w.OP_STATUS == 'RequiredTemperatureReached':
+        if w.OP_STATUS == 'RequiredTemperatureReached' and w.MACHINE_STATUS == 'WASH':
             await publish_message(w, client, "app", "get", "STATUS", "WASH")
-            w.MACHINE_STATUS = 'WASH'
         
             try:
                 async with asyncio.timeout(10):
@@ -161,11 +162,11 @@ async def CoroWashingMachine(w:WashingMachine , client):
             except TimeoutError:
                 await publish_message(w, client, "app", "get", "OP_STATUS", "FUNCTIONCOMPLETE")
                 w.OP_STATUS = 'FUNCTIONCOMPLETE'
+                w.MACHINE_STATUS = 'RINSE'
 
         #RINSE Step
-        if w.OP_STATUS == 'FUNCTIONCOMPLETE':
+        if w.OP_STATUS == 'FUNCTIONCOMPLETE' and w.MACHINE_STATUS == 'RINSE':
             await publish_message(w, client, "app", "get", "STATUS", "RINSE")
-            w.MACHINE_STATUS = 'RINSE'
         
             try:
                 async with asyncio.timeout(10):
@@ -182,11 +183,12 @@ async def CoroWashingMachine(w:WashingMachine , client):
             except TimeoutError:
                 await publish_message(w, client, "app", "get", "OP_STATUS", "FUNCTIONCOMPLETE")
                 w.OP_STATUS = 'FUNCTIONCOMPLETE'
+                w.MACHINE_STATUS = 'SPIN'
 
         #SPIN Step
-        if w.OP_STATUS == 'FUNCTIONCOMPLETE':
+        if w.OP_STATUS == 'FUNCTIONCOMPLETE' and w.MACHINE_STATUS == 'SPIN':
             await publish_message(w, client, "app", "get", "STATUS", "SPIN")
-            w.MACHINE_STATUS = 'SPIN'
+
         
             try:
                 async with asyncio.timeout(10):
@@ -201,9 +203,9 @@ async def CoroWashingMachine(w:WashingMachine , client):
                 continue
 
             except TimeoutError:
-                await publish_message(w, client, "app", "get", "OP_STATUS", "FUNCTIONCOMPLETE")
+                await publish_message(w, client, "app", "get", "STATUS", "OFF")
                 w.OP_STATUS = 'FUNCTIONCOMPLETE'
-                print("Finish All Washing Process")
+                print("Finish All Washing Process\n ")
                 w.MACHINE_STATUS = 'OFF'
 
         
@@ -233,14 +235,35 @@ async def CoroWashingMachine(w:WashingMachine , client):
 
 async def listen(w, client):
     async with client.messages() as messages:
-        await client.subscribe(f"v1cdti/hw/set/{student_id}/model-01/{w.SERIAL}")
+        await client.subscribe(f"v1cdti/hw/set/{student_id}/model-01/+")
+        print(f"{time.ctime()} - [{w.SERIAL}] SUB topic: v1cdti/hw/set/{student_id}/model-01/+")
+        
+        await client.subscribe(f"v1cdti/app/get/{student_id}/model-01/+")
+        print(f"{time.ctime()} - [{w.SERIAL}] SUB topic: v1cdti/app/get/{student_id}/model-01/+")
+
         async for message in messages:
+
             m_decode = json.loads(message.payload)
-            if message.topic.matches(f"v1cdti/hw/set/{student_id}/model-01/{w.SERIAL}"):
+            
+            if message.topic.matches(f"v1cdti/hw/get/{student_id}/model-01/+"):
+                await publish_message(w, client, "hw", "monitor", "STATUS", w.MACHINE_STATUS)
+
+            elif message.topic.matches(f"v1cdti/hw/set/{student_id}/model-01/+"):
+                await publish_message(w, client, "hw", "monitor", "STATUS", w.MACHINE_STATUS)
+
+            elif message.topic.matches(f"v1cdti/app/get/{student_id}/model-01/+"):
+                await publish_message(w, client, "app", "monitor", "STATUS", w.MACHINE_STATUS)
+
+            elif message.topic.matches(f"v1cdti/app/set/{student_id}/model-01/+"):
+                await publish_message(w, client, "app", "monitor", "STATUS", w.MACHINE_STATUS)
+                
+            
+            if message.topic.matches(f"v1cdti/hw/set/{student_id}/model-01/+"):
+
                 if w.SERIAL == m_decode['serial']:
                     # set washing machine status
                     print(f"{time.ctime()} - MQTT - [{m_decode['serial']}]:{m_decode['name']} => {m_decode['value']}")
-                    if (m_decode['name']=="STATUS" and m_decode['value']=="READY") and w.MACHINE_STATUS != 'FAULT' :
+                    if (m_decode['name']=="STATUS" and m_decode['value']=="READY") and w.MACHINE_STATUS != 'FAULT':
                         w.MACHINE_STATUS = 'READY'
                         w.event.set()
                     
@@ -249,7 +272,7 @@ async def listen(w, client):
                         w.MACHINE_STATUS = 'FAULT'
 
                     #cancel task from Fillwater
-                    elif (m_decode['name']=="STATUS" and m_decode['value']=="WATERFULLLEVEL"):
+                    elif (m_decode['name']=="OP_STATUS" and m_decode['value']=="WATERFULLLEVEL"):
                         if w.MACHINE_STATUS == 'FILLWATER':
                             w.OP_STATUS = "WATERFULLLEVEL"
                             if w.Task:
@@ -258,7 +281,7 @@ async def listen(w, client):
                             print("Command Error!")
                     
                     #cancel task from Heatwater
-                    elif (m_decode['name']=="STATUS" and m_decode['value']=="RequiredTemperatureReached"):
+                    elif (m_decode['name']=="OP_STATUS" and m_decode['value']=="RequiredTemperatureReached"):
                         if w.OP_STATUS == 'WATERFULLLEVEL':
                             w.OP_STATUS = "RequiredTemperatureReached"
                             if w.Task:
@@ -293,6 +316,7 @@ async def listen(w, client):
                         if  w.MACHINE_STATUS == 'FAULT':
                             w.MACHINE_STATUS = 'OFF'
                             w.event.set()
+                            print("FAULT STATUS IS ALREADY CLEAR!")
                         else:
                             print("Command Error!")
                 else:
@@ -301,7 +325,8 @@ async def listen(w, client):
 
 
 async def main():
-    n = 2
+    #number of washing machine
+    n = 1
     W_list = [WashingMachine(serial=f'SN-00{i+1}')for i in range(n)]
     async with aiomqtt.Client("mqtt.eclipseprojects.io") as client:
         CoroWashingMachine_list = []
